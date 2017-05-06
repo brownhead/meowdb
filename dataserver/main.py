@@ -8,15 +8,48 @@ import urllib2
 import random
 
 
+class Event(object):
+    def __init__(self, command, args):
+        self.command = command
+        self.args = args
+        self.is_handled = False
+        self.response = None
+
+    def set_response(self, response):
+        if command == "Heartbeat": # ish... heartbeat?
+            raise ValueError()
+
+        self.response = response
+
+    def mark_handled(self):
+        if self.is_handled:
+            raise RuntimeError("Already handled")
+
+        self.is_handled = True
+
+
 class RaftNode(BaseHTTPServer.BaseHTTPRequestHandler):
     def do_GET(self):
-        RaftNode.queue.put(self.path)
 
         self.send_response(200)
         self.send_header('Content-type','text/html')
         self.end_headers()
+
+        # Make event object from path
+        data = [i for i in self.path.split("/") if i]
+        command = data[0]
+        args = data[1:]
+        event = Event(command, args)
+
+        RaftNode.queue.put(event)
+
+        while True:
+            time.sleep(0.05)
+            if event.is_handled:
+                break
+
         # Send the html message
-        self.wfile.write("Hello World !")
+        self.wfile.write(event.response if event.response is not None else "OK")
 
 
 def server_main(queue, port):
@@ -27,7 +60,7 @@ def server_main(queue, port):
 
 
 def election_timeout(queue):
-    queue.put("ElectionTimeout")
+    queue.put(Event("ElectionTimeout", []))
 
 
 FOLLOWER = 1
@@ -75,7 +108,7 @@ def reset_timer(timer, queue):
 def heartbeat_main(queue):
     while True:
         time.sleep(1)
-        queue.put("Heartbeat")
+        queue.put(Event("Heartbeat", []))
 
 
 def worker_main(queue, nodes):
@@ -90,9 +123,9 @@ def worker_main(queue, nodes):
     timer_to_election = threading.Timer(5, election_timeout, args=(queue, ))
     timer_to_election.start()
     while True:
-        data = [i for i in queue.get().split("/") if i]
-        command = data[0]
-        args = data[1:]
+        event = queue.get()
+        command = event.command
+        args = event.args
         if command != "Heartbeat":
             print "Got", command, args
 
@@ -120,20 +153,21 @@ def worker_main(queue, nodes):
 
             elif command == "VoteRequest":
                 term = int(args[0])
-                if term < current_term:
-                    continue
-                current_term = term
-                candidate = int(args[1])
-                if not voted_for.get(term):
-                    assert candidate in nodes
-                    send_vote(candidate, term)
-                    voted_for[term] = candidate
-                    timer_to_election = reset_timer(timer_to_election, queue)
+                if term >= current_term:
+                    current_term = term
+                    candidate = int(args[1])
+                    if not voted_for.get(term):
+                        assert candidate in nodes
+                        send_vote(candidate, term)
+                        voted_for[term] = candidate
+                        timer_to_election = reset_timer(timer_to_election, queue)
 
         elif state == LEADER:
             if command == "Heartbeat":
                 for node in nodes[1:]:
                    send_append_value(node, current_term)
+
+        event.mark_handled()
 
 
 def main(nodes):
