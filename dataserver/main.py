@@ -16,9 +16,6 @@ class Event(object):
         self.response = None
 
     def set_response(self, response):
-        if command == "Heartbeat": # ish... heartbeat?
-            raise ValueError()
-
         self.response = response
 
     def mark_handled(self):
@@ -68,20 +65,23 @@ LEADER = 2
 CANDIDATE = 3
 
 
-def fetch_on_thread(address):
+def fetch_on_thread(address, queue=None):
     def target():
         print "Fetching", address
-        urllib2.urlopen(address)
+        response = urllib2.urlopen(address).read()
+        if response and queue:
+            data = response.split()
+            queue.put(Event(data[0], data[1:]))
         print "Done...", address
 
     thread = threading.Thread(target=target)
     thread.start()
 
 
-def send_vote_request(node, current_term, current_node):
+def send_vote_request(node, current_term, current_node, queue):
     address = "http://localhost:%s/VoteRequest/%s/%s" % (
         node, current_term, current_node)
-    fetch_on_thread(address)
+    fetch_on_thread(address, queue)
 
 
 def send_vote(node, current_term):
@@ -139,12 +139,12 @@ def worker_main(queue, nodes):
                 voted_for[current_term] = nodes[0]
                 state = CANDIDATE
                 for node in nodes[1:]:
-                    send_vote_request(node, current_term, nodes[0])
+                    send_vote_request(node, current_term, nodes[0], queue)
                 timer_to_election = reset_timer(timer_to_election, queue)
 
 
             elif command == "VoteGot":
-                if int(args[0]) == current_term:
+                if int(args[0]) == current_term and args[1] == "True":
                     num_votes += 1
 
                 if num_votes > len(nodes) // 2:
@@ -153,14 +153,16 @@ def worker_main(queue, nodes):
 
             elif command == "VoteRequest":
                 term = int(args[0])
-                if term >= current_term:
+                if term >= current_term and not voted_for.get(term):
                     current_term = term
                     candidate = int(args[1])
-                    if not voted_for.get(term):
-                        assert candidate in nodes
-                        send_vote(candidate, term)
-                        voted_for[term] = candidate
-                        timer_to_election = reset_timer(timer_to_election, queue)
+
+                    assert candidate in nodes
+                    event.set_response("VoteGot %s True" % term)
+                    voted_for[term] = candidate
+                    timer_to_election = reset_timer(timer_to_election, queue)
+                else:
+                    event.set_response("VoteGot %s False" % term)
 
         elif state == LEADER:
             if command == "Heartbeat":
