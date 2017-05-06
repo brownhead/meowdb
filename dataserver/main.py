@@ -88,8 +88,8 @@ def send_vote(node, current_term):
     fetch_on_thread(address)
 
 
-def send_append_value(node, current_term, command):
-    address = "http://localhost:%s/AppendValue/%s/%s" % (node, current_term, command)
+def send_append_value(node, current_term, prev_log_index, prev_log_term, command):
+    address = "http://localhost:%s/AppendValue/%s/%s/%s/%s" % (node, current_term, prev_log_index, prev_log_term, command)
     fetch_on_thread(address)
 
 
@@ -118,7 +118,8 @@ def worker_main(queue, nodes):
     voted_for = {}
     num_votes = 0
     current_term = 0
-    log = []
+    log = [LogEntry(0,0)]
+    next_index = []
 
     heartbeat_timer = threading.Thread(target=heartbeat_main, args=(queue, ))
     heartbeat_timer.start()
@@ -130,17 +131,22 @@ def worker_main(queue, nodes):
         command = event.command
         args = event.args
         if command != "Heartbeat" or state == LEADER:
-            print nodes[0], state, "got", command, args
+            print nodes[0], state, "got", command, args, "log", log
 
         if state in [FOLLOWER, CANDIDATE]:
             if command == "AppendValue":
-                term = args[0]
-                command = args[1]
+                term, prev_log_index, prev_log_term = [int(x) for x in args[:3]]
+                command = args[3]
                 timer_to_election = reset_timer(timer_to_election, queue)
-                if command != "None":
+                if len(log) >= prev_log_index or log[prev_log_index].term != prev_log_term:
+                    event.set_response("AppendValueResponse %s False" % current_term)
+                else:
+                    if len(log) > prev_log_index:
+                        if log[prev_log_index+1].term != term:
+                            log = log[:prev_log_index+1]
                     print "Added new log", command
-                    log.append(LogEntry(current_term, command))
-
+                    log.append(LogEntry(command, term))
+                    event.set_response("AppendValueResponse %s True" % current_term)
 
             elif command == "ElectionTimeout":
                 current_term += 1
@@ -158,6 +164,9 @@ def worker_main(queue, nodes):
 
                 if num_votes > len(nodes) // 2:
                     state = LEADER
+                    # TODO: should this take into account if committed / applied to state machine?
+                    last_log_index = len(log)-1
+                    next_index = [last_log_index for n in nodes[1:]]
                     timer_to_election.cancel()
 
             elif command == "VoteRequest":
@@ -174,15 +183,26 @@ def worker_main(queue, nodes):
                     event.set_response("VoteGot %s False" % term)
 
         elif state == LEADER:
+
             if command == "Heartbeat":
-                for node in nodes[1:]:
-                   send_append_value(node, current_term, "None")
+                for i, node in enumerate(nodes[1:]):
+                    prev_log_index = next_index[i]
+                    prev_log_term = log[prev_log_index].term
+                    send_append_value(node, current_term, prev_log_index, prev_log_term, "None")
 
             elif command == "ClientAppendValue":
                 command = event.args[0]
-                log.append((current_term, command))
+                log.append(LogEntry(current_term, command))
                 for node in nodes[1:]:
-                    send_append_value(node, current_term, command)
+                    prev_log_index = next_index[i]
+                    prev_log_term = log[prev_log_index].term
+                    send_append_value(node, current_term, prev_log_index, prev_log_term, command)
+
+            elif command == "AppendValueResponse":
+                follower_current_term, success = args
+                print args
+                # if success == "False":
+                    # assert
 
 
         event.mark_handled()
