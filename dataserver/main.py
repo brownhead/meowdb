@@ -6,6 +6,7 @@ import SocketServer
 import BaseHTTPServer
 import urllib2
 import random
+import collections
 
 
 class Event(object):
@@ -67,12 +68,10 @@ CANDIDATE = 3
 
 def fetch_on_thread(address, queue=None):
     def target():
-        print "Fetching", address
         response = urllib2.urlopen(address).read()
         if response and queue:
             data = response.split()
             queue.put(Event(data[0], data[1:]))
-        print "Done...", address
 
     thread = threading.Thread(target=target)
     thread.start()
@@ -89,8 +88,8 @@ def send_vote(node, current_term):
     fetch_on_thread(address)
 
 
-def send_append_value(node, current_term):
-    address = "http://localhost:%s/AppendValue/%s" % (node, current_term)
+def send_append_value(node, current_term, command):
+    address = "http://localhost:%s/AppendValue/%s/%s" % (node, current_term, command)
     fetch_on_thread(address)
 
 
@@ -111,11 +110,15 @@ def heartbeat_main(queue):
         queue.put(Event("Heartbeat", []))
 
 
+LogEntry = collections.namedtuple("LogEntry", ["command", "term"])
+
+
 def worker_main(queue, nodes):
     state = FOLLOWER
     voted_for = {}
     num_votes = 0
     current_term = 0
+    log = []
 
     heartbeat_timer = threading.Thread(target=heartbeat_main, args=(queue, ))
     heartbeat_timer.start()
@@ -126,12 +129,18 @@ def worker_main(queue, nodes):
         event = queue.get()
         command = event.command
         args = event.args
-        if command != "Heartbeat":
-            print "Got", command, args
+        if command != "Heartbeat" or state == LEADER:
+            print nodes[0], state, "got", command, args
 
         if state in [FOLLOWER, CANDIDATE]:
             if command == "AppendValue":
+                term = args[0]
+                command = args[1]
                 timer_to_election = reset_timer(timer_to_election, queue)
+                if command != "None":
+                    print "Added new log", command
+                    log.append(LogEntry(current_term, command))
+
 
             elif command == "ElectionTimeout":
                 current_term += 1
@@ -167,7 +176,14 @@ def worker_main(queue, nodes):
         elif state == LEADER:
             if command == "Heartbeat":
                 for node in nodes[1:]:
-                   send_append_value(node, current_term)
+                   send_append_value(node, current_term, "None")
+
+            elif command == "ClientAppendValue":
+                command = event.args[0]
+                log.append((current_term, command))
+                for node in nodes[1:]:
+                    send_append_value(node, current_term, command)
+
 
         event.mark_handled()
 
