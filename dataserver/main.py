@@ -2,12 +2,10 @@ import time
 import Queue
 import threading
 import sys
-import SimpleHTTPServer
 import SocketServer
 import BaseHTTPServer
 import urllib2
 import random
-
 
 
 class RaftNode(BaseHTTPServer.BaseHTTPRequestHandler):
@@ -21,8 +19,8 @@ class RaftNode(BaseHTTPServer.BaseHTTPRequestHandler):
         self.wfile.write("Hello World !")
 
 
-
 def server_main(queue, port):
+    # global variable, just to share queue with RaftNode
     RaftNode.queue = queue
     server = SocketServer.TCPServer(("", port), RaftNode)
     server.serve_forever()
@@ -113,7 +111,9 @@ def worker_main(queue, nodes):
 
 
             elif command == "VoteGot":
-                num_votes += 1
+                if int(args[0]) == current_term:
+                    num_votes += 1
+
                 if num_votes > len(nodes) // 2:
                     state = LEADER
                     timer_to_election.cancel()
@@ -134,10 +134,6 @@ def worker_main(queue, nodes):
             if command == "Heartbeat":
                 for node in nodes[1:]:
                    send_append_value(node, current_term)
-
-
-
-
 
 
 def main(nodes):
